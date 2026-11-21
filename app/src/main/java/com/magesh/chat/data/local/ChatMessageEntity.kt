@@ -6,7 +6,10 @@ import androidx.room.PrimaryKey
 
 enum class MessageType {
     TEXT,
-    AUDIO
+    AUDIO,
+    IMAGE,
+    FILE,
+    SONG
 }
 
 @Entity(
@@ -28,5 +31,7 @@ data class ChatMessageEntity(
     val audioUrl: String? = null,
     val localAudioPath: String? = null,
     val audioDurationMs: Long = 0L,
+    val fileName: String = "",
+    val fileSizeBytes: Long = 0L,
     val timestampMs: Long = System.currentTimeMillis()
 )

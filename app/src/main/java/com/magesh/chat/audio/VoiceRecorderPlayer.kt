@@ -3,6 +3,7 @@ package com.magesh.chat.audio
 import android.content.Context
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.media.RingtoneManager
 import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.ArrayDeque
 
 data class AudioPlaybackState(
     val activeMessageId: String? = null,
@@ -33,6 +35,10 @@ class VoiceRecorderPlayer(private val context: Context) {
     private var player: MediaPlayer? = null
     private var playTimerJob: Job? = null
 
+    // Live voice chat sequential queue
+    private val liveQueue = ArrayDeque<File>()
+    private var livePlayer: MediaPlayer? = null
+
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
@@ -41,6 +47,13 @@ class VoiceRecorderPlayer(private val context: Context) {
 
     private val _playbackState = MutableStateFlow(AudioPlaybackState())
     val playbackState: StateFlow<AudioPlaybackState> = _playbackState.asStateFlow()
+
+    fun playNotificationSound() {
+        runCatching {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            RingtoneManager.getRingtone(context, uri)?.play()
+        }
+    }
 
     fun startRecording(): Boolean {
         if (_isRecording.value) return false
@@ -119,7 +132,42 @@ class VoiceRecorderPlayer(private val context: Context) {
             }
             return
         }
+        playFromStart(messageId, filePath, 0L)
+    }
 
+    fun syncPlay(messageId: String, filePath: String, positionMs: Long) {
+        val current = _playbackState.value
+        if (current.activeMessageId == messageId && player != null) {
+            runCatching {
+                player?.seekTo(positionMs.toInt())
+                if (player?.isPlaying != true) player?.start()
+            }
+            _playbackState.value = current.copy(isPlaying = true, positionMs = positionMs)
+        } else {
+            playFromStart(messageId, filePath, positionMs)
+        }
+    }
+
+    fun syncPause(messageId: String, positionMs: Long) {
+        val current = _playbackState.value
+        if (current.activeMessageId == messageId && player != null) {
+            runCatching {
+                player?.pause()
+                player?.seekTo(positionMs.toInt())
+            }
+            _playbackState.value = current.copy(isPlaying = false, positionMs = positionMs)
+        }
+    }
+
+    fun syncSeek(messageId: String, positionMs: Long) {
+        val current = _playbackState.value
+        if (current.activeMessageId == messageId && player != null) {
+            runCatching { player?.seekTo(positionMs.toInt()) }
+            _playbackState.value = current.copy(positionMs = positionMs)
+        }
+    }
+
+    private fun playFromStart(messageId: String, filePath: String, startPosMs: Long) {
         stopPlayback()
         val file = File(filePath)
         if (!file.exists()) return
@@ -128,12 +176,13 @@ class VoiceRecorderPlayer(private val context: Context) {
         try {
             mp.setDataSource(filePath)
             mp.prepare()
+            if (startPosMs > 0L) mp.seekTo(startPosMs.toInt())
             mp.start()
             player = mp
             _playbackState.value = AudioPlaybackState(
                 activeMessageId = messageId,
                 isPlaying = true,
-                positionMs = 0L,
+                positionMs = startPosMs,
                 durationMs = mp.duration.toLong().coerceAtLeast(1L)
             )
             mp.setOnCompletionListener {
@@ -148,12 +197,45 @@ class VoiceRecorderPlayer(private val context: Context) {
                             durationMs = p.duration.toLong().coerceAtLeast(1L)
                         )
                     }
-                    delay(100L)
+                    delay(150L)
                 }
             }
         } catch (_: Exception) {
             runCatching { mp.release() }
             stopPlayback()
+        }
+    }
+
+    fun enqueueLiveVoiceChunk(file: File) {
+        liveQueue.addLast(file)
+        if (livePlayer == null) {
+            playNextLiveChunk()
+        }
+    }
+
+    private fun playNextLiveChunk() {
+        val next = liveQueue.pollFirst()
+        if (next == null) {
+            livePlayer = null
+            return
+        }
+        val mp = MediaPlayer()
+        try {
+            mp.setDataSource(next.absolutePath)
+            mp.prepare()
+            mp.start()
+            livePlayer = mp
+            mp.setOnCompletionListener {
+                runCatching { mp.release() }
+                livePlayer = null
+                next.delete()
+                playNextLiveChunk()
+            }
+        } catch (_: Exception) {
+            runCatching { mp.release() }
+            livePlayer = null
+            next.delete()
+            playNextLiveChunk()
         }
     }
 
@@ -171,5 +253,8 @@ class VoiceRecorderPlayer(private val context: Context) {
     fun release() {
         stopRecording(cancel = true)
         stopPlayback()
+        runCatching { livePlayer?.release() }
+        livePlayer = null
+        liveQueue.clear()
     }
 }

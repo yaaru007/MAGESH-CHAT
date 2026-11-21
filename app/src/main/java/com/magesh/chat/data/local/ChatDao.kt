@@ -11,6 +11,9 @@ interface ChatDao {
     @Query("SELECT * FROM chat_messages WHERE roomCode = :roomCode ORDER BY timestampMs ASC")
     fun observeMessages(roomCode: String): Flow<List<ChatMessageEntity>>
 
+    @Query("SELECT * FROM chat_messages WHERE remoteId = :remoteId LIMIT 1")
+    suspend fun getByRemoteId(remoteId: String): ChatMessageEntity?
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnore(message: ChatMessageEntity): Long
 

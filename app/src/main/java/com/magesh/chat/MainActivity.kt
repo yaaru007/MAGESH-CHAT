@@ -28,9 +28,13 @@ class MainActivity : ComponentActivity() {
             val profile by vm.profile.collectAsStateWithLifecycle()
             val messages by vm.messages.collectAsStateWithLifecycle()
             val isConnected by vm.isConnected.collectAsStateWithLifecycle()
+            val soundEnabled by vm.soundEnabled.collectAsStateWithLifecycle()
+            val liveVoiceMode by vm.liveVoiceMode.collectAsStateWithLifecycle()
+            val isTalkingLive by vm.isTalkingLive.collectAsStateWithLifecycle()
             val isRecording by vm.isRecording.collectAsStateWithLifecycle()
             val recordingDurationMs by vm.recordingDurationMs.collectAsStateWithLifecycle()
             val audioPlaybackState by vm.audioPlaybackState.collectAsStateWithLifecycle()
+            val activeSongMessage by vm.activeSongMessage.collectAsStateWithLifecycle()
 
             val context = LocalContext.current
             val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -53,14 +57,22 @@ class MainActivity : ComponentActivity() {
                             profile = profile,
                             messages = messages,
                             isConnected = isConnected,
+                            soundEnabled = soundEnabled,
+                            liveVoiceMode = liveVoiceMode,
+                            isTalkingLive = isTalkingLive,
                             isRecording = isRecording,
                             recordingDurationMs = recordingDurationMs,
                             audioPlaybackState = audioPlaybackState,
+                            activeSongMessage = activeSongMessage,
                             onSendText = vm::sendText,
+                            onSendMedia = vm::sendMedia,
                             onStartRecording = vm::startVoiceRecording,
                             onStopAndSendRecording = vm::stopAndSendVoiceRecording,
                             onCancelRecording = vm::cancelVoiceRecording,
-                            onTogglePlayVoice = vm::togglePlayVoice,
+                            onTogglePlayAudio = vm::togglePlayAudioOrSong,
+                            onToggleSound = vm::toggleSound,
+                            onToggleLiveVoiceMode = vm::toggleLiveVoiceMode,
+                            onToggleLiveTalk = vm::toggleLiveTalk,
                             onToggleDarkMode = vm::toggleDarkMode,
                             onLeaveRoom = vm::leaveRoom
                         )
