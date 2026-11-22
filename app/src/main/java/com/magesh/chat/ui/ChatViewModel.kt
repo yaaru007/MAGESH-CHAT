@@ -12,6 +12,7 @@ import com.magesh.chat.data.local.ChatDatabase
 import com.magesh.chat.data.local.ChatMessageEntity
 import com.magesh.chat.data.local.MessageType
 import com.magesh.chat.data.network.NtfyRoomTransport
+import com.magesh.chat.data.network.NtpTimeSync
 import com.magesh.chat.data.preferences.UserPreferences
 import com.magesh.chat.data.preferences.UserProfile
 import kotlinx.coroutines.Dispatchers
@@ -47,7 +48,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val voice = VoiceRecorderPlayer(application)
 
     val profile: StateFlow<UserProfile> = prefs.profileFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UserProfile())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, UserProfile())
 
     val isConnected: StateFlow<Boolean> = transport.isConnected
     val isRecording: StateFlow<Boolean> = voice.isRecording
@@ -77,15 +78,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 transport.disconnect()
                 flowOf(emptyList())
             } else {
-                // Start every room entry with a clean, fresh chat
-                chatDao.clearRoom(room)
+                // Keep chat alive while in the room (even when picking photos/files)
                 transport.connectRoom(room, sid)
                 chatDao.observeMessages(room)
             }
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
+        // Pre-sync NTP clock immediately at app launch for fast, aligned live conversation
+        NtpTimeSync.syncAsync(viewModelScope)
+
+        // When the app was completely closed and freshly launched, clear any previous session
+        viewModelScope.launch {
+            prefs.leaveRoom()
+            withContext(Dispatchers.IO) {
+                db.clearAllTables()
+                File(application.filesDir, "shared_media").deleteRecursively()
+                File(application.filesDir, "voice_notes").deleteRecursively()
+                File(application.cacheDir, "live_voice").deleteRecursively()
+            }
+        }
+
         viewModelScope.launch {
             transport.incomingMessageNotice.collect {
                 if (_soundEnabled.value) voice.playNotificationSound()
@@ -121,8 +135,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Clears all text, images, voice notes, and cached media files on exit
-     * so re-entering starts a completely fresh chat.
+     * Clears all text, images, voice notes, and cached media files on logout/exit.
+     * While you remain in the room (even when picking photos/files), chat stays intact.
      */
     fun leaveRoom() {
         val room = profile.value.activeRoomCode
