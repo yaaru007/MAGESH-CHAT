@@ -81,7 +81,8 @@ class NtfyRoomTransport(
 
         disconnect()
         activeRoomCode = cleanCode
-        connectedAtMs = System.currentTimeMillis()
+        NtpTimeSync.syncAsync(scope)
+        connectedAtMs = NtpTimeSync.nowMs()
         seenIds.clear()
 
         val topic = hashRoomToTopic(cleanCode)
@@ -125,7 +126,7 @@ class NtfyRoomTransport(
         if (cleanText.isBlank()) return@withContext false
 
         val remoteId = UUID.randomUUID().toString()
-        val nowMs = System.currentTimeMillis()
+        val nowMs = NtpTimeSync.nowMs()
         val cleanRoom = roomCode.trim().uppercase()
         val topic = hashRoomToTopic(cleanRoom)
 
@@ -177,7 +178,7 @@ class NtfyRoomTransport(
                     put("rid", remoteId)
                     put("action", action)
                     put("pos", positionMs)
-                    put("ts", System.currentTimeMillis())
+                    put("ts", NtpTimeSync.nowMs())
                 }.toString()
             )
         }
@@ -195,7 +196,7 @@ class NtfyRoomTransport(
         if (!audioFile.exists()) return@withContext false
 
         val remoteId = UUID.randomUUID().toString()
-        val nowMs = System.currentTimeMillis()
+        val nowMs = NtpTimeSync.nowMs()
         val cleanRoom = roomCode.trim().uppercase()
         val topic = hashRoomToTopic(cleanRoom)
 
@@ -250,16 +251,16 @@ class NtfyRoomTransport(
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val rawName = queryFileName(sourceUri) ?: when (messageType) {
-                MessageType.IMAGE -> "photo_${System.currentTimeMillis()}.jpg"
-                MessageType.SONG -> "song_${System.currentTimeMillis()}.mp3"
-                else -> "file_${System.currentTimeMillis()}"
+                MessageType.IMAGE -> "photo_${NtpTimeSync.nowMs()}.jpg"
+                MessageType.SONG -> "song_${NtpTimeSync.nowMs()}.mp3"
+                else -> "file_${NtpTimeSync.nowMs()}"
             }
 
             val dir = File(context.filesDir, "shared_media").apply { mkdirs() }
             val safeName = sanitizeFileName(
                 if (messageType == MessageType.IMAGE) "${rawName.substringBeforeLast('.')}.jpg" else rawName
             )
-            val localFile = File(dir, "${System.currentTimeMillis()}_$safeName")
+            val localFile = File(dir, "${NtpTimeSync.nowMs()}_$safeName")
 
             if (messageType == MessageType.IMAGE) {
                 val compressed = compressImageToJpeg(sourceUri)
@@ -282,7 +283,7 @@ class NtfyRoomTransport(
             }
 
             val remoteId = UUID.randomUUID().toString()
-            val nowMs = System.currentTimeMillis()
+            val nowMs = NtpTimeSync.nowMs()
             val cleanRoom = roomCode.trim().uppercase()
             val topic = hashRoomToTopic(cleanRoom)
 

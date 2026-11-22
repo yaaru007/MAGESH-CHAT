@@ -5,8 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,7 +22,6 @@ import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -49,16 +46,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlin.random.Random
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun JoinRoomScreen(
     savedName: String,
-    recentRooms: List<String>,
     onJoin: (name: String, roomCode: String) -> Unit
 ) {
     val context = LocalContext.current
     var displayName by remember(savedName) { mutableStateOf(savedName) }
-    // Auto-generate a fresh Room Code immediately when the app opens
     var roomCode by remember {
         mutableStateOf("MAGESH-${Random.nextInt(1000, 9999)}")
     }
@@ -183,24 +177,6 @@ fun JoinRoomScreen(
                     ) {
                         Text("Enter Chat", style = MaterialTheme.typography.titleMedium)
                     }
-                }
-            }
-        }
-
-        if (recentRooms.isNotEmpty()) {
-            Spacer(Modifier.height(20.dp))
-            Text(
-                text = "Recent Codes",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(8.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                recentRooms.forEach { code ->
-                    AssistChip(
-                        onClick = { roomCode = code },
-                        label = { Text(code) }
-                    )
                 }
             }
         }

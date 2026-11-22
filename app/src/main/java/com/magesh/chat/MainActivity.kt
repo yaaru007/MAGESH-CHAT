@@ -49,7 +49,6 @@ class MainActivity : ComponentActivity() {
                     if (profile.activeRoomCode.isBlank()) {
                         JoinRoomScreen(
                             savedName = profile.displayName,
-                            recentRooms = profile.recentRooms,
                             onJoin = vm::joinRoom
                         )
                     } else {
