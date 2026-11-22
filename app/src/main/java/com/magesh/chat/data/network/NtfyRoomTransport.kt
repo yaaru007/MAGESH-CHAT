@@ -1,6 +1,8 @@
 package com.magesh.chat.data.network
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.magesh.chat.data.local.ChatDao
@@ -26,6 +28,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.Collections
@@ -35,7 +38,7 @@ import java.util.concurrent.TimeUnit
 data class SongSyncEvent(
     val senderId: String,
     val remoteId: String,
-    val action: String, // PLAY, PAUSE, SEEK
+    val action: String,
     val positionMs: Long
 )
 
@@ -46,6 +49,8 @@ class NtfyRoomTransport(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(25, TimeUnit.SECONDS)
         .build()
@@ -54,7 +59,7 @@ class NtfyRoomTransport(
     private var activeRoomCode: String = ""
     private var mySenderId: String = ""
     @Volatile private var connectedAtMs: Long = 0L
-    private val seenLiveVoiceIds = Collections.synchronizedSet(HashSet<String>())
+    private val seenIds = Collections.synchronizedSet(HashSet<String>())
 
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -77,10 +82,11 @@ class NtfyRoomTransport(
         disconnect()
         activeRoomCode = cleanCode
         connectedAtMs = System.currentTimeMillis()
-        seenLiveVoiceIds.clear()
+        seenIds.clear()
 
         val topic = hashRoomToTopic(cleanCode)
-        val wsUrl = "wss://ntfy.sh/$topic/ws?since=all"
+        // Live stream only (no ?since=all) so re-entering a room always starts a fresh, clean chat
+        val wsUrl = "wss://ntfy.sh/$topic/ws"
 
         val request = Request.Builder().url(wsUrl).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -213,7 +219,7 @@ class NtfyRoomTransport(
         val metaJson = JSONObject().apply {
             put("rid", remoteId)
             put("sid", senderId)
-            put("sname", senderName)
+            put("sname", sanitizeAscii(senderName, "Friend"))
             put("type", if (isLiveChunk) "LIVE_VOICE" else "AUDIO")
             put("dur", durationMs)
             put("ts", nowMs)
@@ -231,6 +237,10 @@ class NtfyRoomTransport(
         }.getOrDefault(false)
     }
 
+    /**
+     * Compresses images to <=1280px JPEG so large camera photos send fast and reliably,
+     * and sanitizes HTTP header values to pure ASCII so OkHttp never throws on Unicode filenames.
+     */
     suspend fun sendMediaOrFile(
         roomCode: String,
         senderId: String,
@@ -239,17 +249,32 @@ class NtfyRoomTransport(
         messageType: MessageType
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val fileName = queryFileName(sourceUri) ?: when (messageType) {
+            val rawName = queryFileName(sourceUri) ?: when (messageType) {
                 MessageType.IMAGE -> "photo_${System.currentTimeMillis()}.jpg"
                 MessageType.SONG -> "song_${System.currentTimeMillis()}.mp3"
                 else -> "file_${System.currentTimeMillis()}"
             }
 
             val dir = File(context.filesDir, "shared_media").apply { mkdirs() }
-            val localFile = File(dir, "${System.currentTimeMillis()}_$fileName")
-            context.contentResolver.openInputStream(sourceUri)?.use { input ->
-                localFile.outputStream().use { output -> input.copyTo(output) }
-            } ?: error("Cannot read selected file")
+            val safeName = sanitizeFileName(
+                if (messageType == MessageType.IMAGE) "${rawName.substringBeforeLast('.')}.jpg" else rawName
+            )
+            val localFile = File(dir, "${System.currentTimeMillis()}_$safeName")
+
+            if (messageType == MessageType.IMAGE) {
+                val compressed = compressImageToJpeg(sourceUri)
+                if (compressed != null) {
+                    localFile.writeBytes(compressed)
+                } else {
+                    context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                        localFile.outputStream().use { output -> input.copyTo(output) }
+                    } ?: error("Cannot read image")
+                }
+            } else {
+                context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                    localFile.outputStream().use { output -> input.copyTo(output) }
+                } ?: error("Cannot read selected file")
+            }
 
             if (localFile.length() > 14_500_000L) {
                 localFile.delete()
@@ -268,9 +293,9 @@ class NtfyRoomTransport(
                     senderId = senderId,
                     senderName = senderName,
                     type = messageType,
-                    text = fileName,
+                    text = safeName,
                     localAudioPath = localFile.absolutePath,
-                    fileName = fileName,
+                    fileName = safeName,
                     fileSizeBytes = localFile.length(),
                     timestampMs = nowMs
                 )
@@ -279,25 +304,50 @@ class NtfyRoomTransport(
             val metaJson = JSONObject().apply {
                 put("rid", remoteId)
                 put("sid", senderId)
-                put("sname", senderName)
+                put("sname", sanitizeAscii(senderName, "Friend"))
                 put("type", messageType.name)
-                put("fname", fileName)
+                put("fname", safeName)
                 put("fsize", localFile.length())
                 put("ts", nowMs)
             }.toString()
 
-            val mime = context.contentResolver.getType(sourceUri) ?: "application/octet-stream"
+            val mime = if (messageType == MessageType.IMAGE) {
+                "image/jpeg"
+            } else {
+                context.contentResolver.getType(sourceUri) ?: "application/octet-stream"
+            }
+
             val req = Request.Builder()
                 .url("https://ntfy.sh/$topic")
                 .put(localFile.asRequestBody(mime.toMediaType()))
-                .header("Filename", fileName)
+                .header("Filename", safeName)
                 .header("Title", metaJson)
                 .build()
 
-            val ok = client.newCall(req).execute().use { it.isSuccessful }
-            if (!ok) error("Upload failed")
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("Upload HTTP ${resp.code}")
+            }
             remoteId
         }
+    }
+
+    private fun compressImageToJpeg(uri: Uri): ByteArray? {
+        return runCatching {
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+
+            var sample = 1
+            while (opts.outWidth / sample > 1280 || opts.outHeight / sample > 1280) {
+                sample *= 2
+            }
+            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
+            val out = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.JPEG, 82, out)
+            bmp.recycle()
+            out.toByteArray()
+        }.getOrNull()
     }
 
     private fun postJson(payload: JSONObject): Boolean {
@@ -321,6 +371,8 @@ class NtfyRoomTransport(
                     val meta = JSONObject(root.optString("title", "{}"))
                     val typeStr = meta.optString("type", "FILE")
                     val remoteId = meta.optString("rid").ifBlank { root.optString("id") }
+                    if (!seenIds.add(remoteId)) return@runCatching
+
                     val senderId = meta.optString("sid")
                     val senderName = meta.optString("sname", "Friend")
                     val dur = meta.optLong("dur", 1000L)
@@ -330,9 +382,7 @@ class NtfyRoomTransport(
                     val url = attachment.optString("url")
 
                     if (typeStr == "LIVE_VOICE") {
-                        // Only play live voice chunks sent AFTER entering the room (never replay old chunks)
-                        val isFresh = ts >= (connectedAtMs - 3000L)
-                        if (isFresh && senderId != mySenderId && url.isNotBlank() && seenLiveVoiceIds.add(remoteId)) {
+                        if (ts >= (connectedAtMs - 3000L) && senderId != mySenderId && url.isNotBlank()) {
                             downloadTempFile(url, "live_${remoteId.take(8)}.m4a")?.let {
                                 _incomingVoiceChunks.emit(it)
                             }
@@ -357,7 +407,7 @@ class NtfyRoomTransport(
                         )
                     )
                     if (inserted != -1L) {
-                        if (ts >= (connectedAtMs - 2000L) && senderId.isNotBlank() && senderId != mySenderId) {
+                        if (senderId.isNotBlank() && senderId != mySenderId) {
                             _incomingMessageNotice.emit(Unit)
                         }
                         if (url.isNotBlank()) {
@@ -385,6 +435,7 @@ class NtfyRoomTransport(
                     }
 
                     val remoteId = body.optString("rid").ifBlank { root.optString("id") }
+                    if (!seenIds.add(remoteId)) return@runCatching
                     val senderName = body.optString("sname", "Friend")
                     val text = body.optString("text")
                     val ts = body.optLong("ts", root.optLong("time") * 1000L)
@@ -400,7 +451,7 @@ class NtfyRoomTransport(
                                 timestampMs = ts
                             )
                         )
-                        if (inserted != -1L && ts >= (connectedAtMs - 2000L) && senderId.isNotBlank() && senderId != mySenderId) {
+                        if (inserted != -1L && senderId.isNotBlank() && senderId != mySenderId) {
                             _incomingMessageNotice.emit(Unit)
                         }
                     }
@@ -416,7 +467,7 @@ class NtfyRoomTransport(
                 if (!resp.isSuccessful) return
                 val bytes = resp.body?.bytes() ?: return
                 val dir = File(context.filesDir, "shared_media").apply { mkdirs() }
-                val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                val safeName = sanitizeFileName(fileName)
                 val file = File(dir, "rx_${remoteId.take(8)}_$safeName")
                 file.writeBytes(bytes)
                 scope.launch {
@@ -446,6 +497,12 @@ class NtfyRoomTransport(
             if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
         }
     }
+
+    private fun sanitizeFileName(name: String): String =
+        name.replace(Regex("[^A-Za-z0-9._-]"), "_").takeLast(64).ifBlank { "file.bin" }
+
+    private fun sanitizeAscii(input: String, fallback: String): String =
+        input.replace(Regex("[^\\x20-\\x7E]"), "").trim().ifBlank { fallback }
 
     private fun hashRoomToTopic(roomCode: String): String {
         val digest = MessageDigest.getInstance("SHA-256")

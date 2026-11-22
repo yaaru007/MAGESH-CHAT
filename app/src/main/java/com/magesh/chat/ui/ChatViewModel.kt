@@ -14,6 +14,7 @@ import com.magesh.chat.data.local.MessageType
 import com.magesh.chat.data.network.NtfyRoomTransport
 import com.magesh.chat.data.preferences.UserPreferences
 import com.magesh.chat.data.preferences.UserProfile
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -27,6 +28,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -74,6 +77,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 transport.disconnect()
                 flowOf(emptyList())
             } else {
+                // Start every room entry with a clean, fresh chat
+                chatDao.clearRoom(room)
                 transport.connectRoom(room, sid)
                 chatDao.observeMessages(room)
             }
@@ -83,18 +88,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch {
             transport.incomingMessageNotice.collect {
-                if (_soundEnabled.value) {
-                    voice.playNotificationSound()
-                }
+                if (_soundEnabled.value) voice.playNotificationSound()
             }
         }
-
         viewModelScope.launch {
             transport.incomingVoiceChunks.collect { chunkFile ->
                 voice.enqueueLiveVoiceChunk(chunkFile)
             }
         }
-
         viewModelScope.launch {
             transport.songSyncEvents.collect { ev ->
                 val msg = chatDao.getByRemoteId(ev.remoteId) ?: return@collect
@@ -110,16 +111,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun joinRoom(displayName: String, roomCode: String) {
-        viewModelScope.launch { prefs.joinRoom(displayName, roomCode) }
+        viewModelScope.launch {
+            val clean = roomCode.trim().uppercase()
+            if (clean.isNotBlank()) {
+                chatDao.clearRoom(clean)
+            }
+            prefs.joinRoom(displayName, clean)
+        }
     }
 
+    /**
+     * Clears all text, images, voice notes, and cached media files on exit
+     * so re-entering starts a completely fresh chat.
+     */
     fun leaveRoom() {
+        val room = profile.value.activeRoomCode
         viewModelScope.launch {
             stopLiveTalk()
             _liveVoiceMode.value = false
             _activeSongMessage.value = null
             voice.stopPlayback()
             transport.disconnect()
+            if (room.isNotBlank()) {
+                chatDao.clearRoom(room)
+            }
+            withContext(Dispatchers.IO) {
+                val app = getApplication<Application>()
+                File(app.filesDir, "shared_media").deleteRecursively()
+                File(app.filesDir, "voice_notes").deleteRecursively()
+                File(app.cacheDir, "live_voice").deleteRecursively()
+            }
             prefs.leaveRoom()
         }
     }
@@ -139,11 +160,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleLiveTalk() {
-        if (_isTalkingLive.value) {
-            stopLiveTalk()
-        } else {
-            startLiveTalk()
-        }
+        if (_isTalkingLive.value) stopLiveTalk() else startLiveTalk()
     }
 
     private fun startLiveTalk() {
@@ -207,8 +224,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             result.onFailure { err ->
                 Toast.makeText(
                     getApplication(),
-                    err.message ?: "Failed to send file",
-                    Toast.LENGTH_SHORT
+                    err.message ?: "Failed to send",
+                    Toast.LENGTH_LONG
                 ).show()
             }
         }

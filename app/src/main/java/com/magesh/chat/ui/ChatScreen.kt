@@ -47,7 +47,6 @@ import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Call
-import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.EmojiEmotions
@@ -60,6 +59,7 @@ import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -78,6 +78,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -87,6 +88,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -174,6 +176,12 @@ fun ChatScreen(
         }
     }
 
+    val chatBackground = if (profile.darkMode) {
+        Brush.verticalGradient(listOf(Color(0xFF0D0F14), Color(0xFF151924)))
+    } else {
+        Brush.verticalGradient(listOf(Color(0xFFF3F6FB), Color(0xFFE9EFF8)))
+    }
+
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
@@ -181,6 +189,9 @@ fun ChatScreen(
         topBar = {
             Column {
                 TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
@@ -189,15 +200,15 @@ fun ChatScreen(
                                     .clip(CircleShape)
                                     .background(if (isConnected) Color(0xFF22C55E) else Color(0xFFF59E0B))
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = "Room: ${profile.activeRoomCode}",
+                                    text = profile.activeRoomCode,
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = if (isConnected) "Connected • ${profile.displayName}" else "Connecting...",
+                                    text = if (isConnected) "Live • ${profile.displayName}" else "Connecting...",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -226,11 +237,16 @@ fun ChatScreen(
                             )
                         }
                         IconButton(onClick = {
-                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            cm.setPrimaryClip(ClipData.newPlainText("Room Code", profile.activeRoomCode))
-                            Toast.makeText(context, "Copied ${profile.activeRoomCode}", Toast.LENGTH_SHORT).show()
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(
+                                    Intent.EXTRA_TEXT,
+                                    "Join my private Magesh Chat room!\nRoom Code: ${profile.activeRoomCode}"
+                                )
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share Room Code"))
                         }) {
-                            Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy Room Code")
+                            Icon(Icons.Rounded.Share, contentDescription = "Share Room Code")
                         }
                         IconButton(onClick = onToggleDarkMode) {
                             Icon(
@@ -239,12 +255,11 @@ fun ChatScreen(
                             )
                         }
                         IconButton(onClick = onLeaveRoom) {
-                            Icon(Icons.AutoMirrored.Rounded.ExitToApp, contentDescription = "Switch Room")
+                            Icon(Icons.AutoMirrored.Rounded.ExitToApp, contentDescription = "Exit & Clear Chat")
                         }
                     }
                 )
 
-                // Live Walkie-Talkie Voice Chat Banner
                 AnimatedVisibility(visible = liveVoiceMode) {
                     Surface(
                         color = MaterialTheme.colorScheme.secondaryContainer,
@@ -275,7 +290,6 @@ fun ChatScreen(
                     }
                 }
 
-                // Listen-Together Shared Song Banner
                 activeSongMessage?.let { song ->
                     val isPlaying = audioPlaybackState.activeMessageId == song.remoteId && audioPlaybackState.isPlaying
                     val progress = if (audioPlaybackState.activeMessageId == song.remoteId && audioPlaybackState.durationMs > 0) {
@@ -320,7 +334,8 @@ fun ChatScreen(
         },
         bottomBar = {
             Surface(
-                tonalElevation = 4.dp,
+                tonalElevation = 6.dp,
+                shadowElevation = 8.dp,
                 modifier = Modifier.navigationBarsPadding()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -482,24 +497,48 @@ fun ChatScreen(
             }
         }
     ) { innerPadding ->
-        LazyColumn(
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(chatBackground)
                 .padding(innerPadding)
         ) {
-            items(messages, key = { it.remoteId }) { msg ->
-                val isMine = msg.senderId == profile.senderId
-                MessageBubble(
-                    message = msg,
-                    isMine = isMine,
-                    playbackState = audioPlaybackState,
-                    onTogglePlayAudio = { onTogglePlayAudio(msg) },
-                    onPreviewImage = { previewImagePath = it },
-                    onOpenFile = { path -> openLocalFile(context, path) }
-                )
+            if (messages.isEmpty()) {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Room ${profile.activeRoomCode}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Share this code with friends. Chat clears automatically when you exit.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(messages, key = { it.remoteId }) { msg ->
+                        val isMine = msg.senderId == profile.senderId
+                        MessageBubble(
+                            message = msg,
+                            isMine = isMine,
+                            playbackState = audioPlaybackState,
+                            onTogglePlayAudio = { onTogglePlayAudio(msg) },
+                            onPreviewImage = { previewImagePath = it },
+                            onOpenFile = { path -> openLocalFile(context, path) }
+                        )
+                    }
+                }
             }
         }
     }
@@ -537,9 +576,9 @@ private fun MessageBubble(
         MaterialTheme.colorScheme.onSurface
     }
     val shape = if (isMine) {
-        RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
+        RoundedCornerShape(20.dp, 20.dp, 4.dp, 20.dp)
     } else {
-        RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
+        RoundedCornerShape(20.dp, 20.dp, 20.dp, 4.dp)
     }
 
     Row(
@@ -550,15 +589,16 @@ private fun MessageBubble(
         if (!isMine) {
             Box(
                 modifier = Modifier
-                    .size(30.dp)
+                    .size(32.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                    .background(MaterialTheme.colorScheme.tertiaryContainer),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = message.senderName.take(1).uppercase(),
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
                 )
             }
             Spacer(Modifier.width(6.dp))
@@ -567,15 +607,16 @@ private fun MessageBubble(
         Surface(
             color = bubbleColor,
             shape = shape,
-            tonalElevation = 2.dp,
+            tonalElevation = 3.dp,
+            shadowElevation = 2.dp,
             modifier = Modifier.widthIn(max = 290.dp)
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp)) {
                 if (!isMine) {
                     Text(
                         text = message.senderName,
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
                     Spacer(Modifier.height(2.dp))
@@ -597,7 +638,7 @@ private fun MessageBubble(
                                 modifier = Modifier
                                     .widthIn(max = 240.dp)
                                     .height(180.dp)
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .clip(RoundedCornerShape(14.dp))
                                     .clickable { onPreviewImage(path) }
                             )
                         } else {
