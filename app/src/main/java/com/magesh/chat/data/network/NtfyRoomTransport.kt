@@ -28,6 +28,7 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -52,6 +53,8 @@ class NtfyRoomTransport(
     private var webSocket: WebSocket? = null
     private var activeRoomCode: String = ""
     private var mySenderId: String = ""
+    @Volatile private var connectedAtMs: Long = 0L
+    private val seenLiveVoiceIds = Collections.synchronizedSet(HashSet<String>())
 
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -73,6 +76,9 @@ class NtfyRoomTransport(
 
         disconnect()
         activeRoomCode = cleanCode
+        connectedAtMs = System.currentTimeMillis()
+        seenLiveVoiceIds.clear()
+
         val topic = hashRoomToTopic(cleanCode)
         val wsUrl = "wss://ntfy.sh/$topic/ws?since=all"
 
@@ -165,6 +171,7 @@ class NtfyRoomTransport(
                     put("rid", remoteId)
                     put("action", action)
                     put("pos", positionMs)
+                    put("ts", System.currentTimeMillis())
                 }.toString()
             )
         }
@@ -224,10 +231,6 @@ class NtfyRoomTransport(
         }.getOrDefault(false)
     }
 
-    /**
-     * Uploads an image, pre-downloaded song, or general file (up to 15 MB ntfy limit)
-     * by copying to app local storage first so sender + receiver both keep an offline copy.
-     */
     suspend fun sendMediaOrFile(
         roomCode: String,
         senderId: String,
@@ -327,7 +330,9 @@ class NtfyRoomTransport(
                     val url = attachment.optString("url")
 
                     if (typeStr == "LIVE_VOICE") {
-                        if (senderId != mySenderId && url.isNotBlank()) {
+                        // Only play live voice chunks sent AFTER entering the room (never replay old chunks)
+                        val isFresh = ts >= (connectedAtMs - 3000L)
+                        if (isFresh && senderId != mySenderId && url.isNotBlank() && seenLiveVoiceIds.add(remoteId)) {
                             downloadTempFile(url, "live_${remoteId.take(8)}.m4a")?.let {
                                 _incomingVoiceChunks.emit(it)
                             }
@@ -352,7 +357,7 @@ class NtfyRoomTransport(
                         )
                     )
                     if (inserted != -1L) {
-                        if (senderId.isNotBlank() && senderId != mySenderId) {
+                        if (ts >= (connectedAtMs - 2000L) && senderId.isNotBlank() && senderId != mySenderId) {
                             _incomingMessageNotice.emit(Unit)
                         }
                         if (url.isNotBlank()) {
@@ -365,7 +370,8 @@ class NtfyRoomTransport(
                     val senderId = body.optString("sid")
 
                     if (typeStr == "SONG_SYNC") {
-                        if (senderId != mySenderId) {
+                        val syncTs = body.optLong("ts", root.optLong("time") * 1000L)
+                        if (syncTs >= (connectedAtMs - 3000L) && senderId != mySenderId) {
                             _songSyncEvents.emit(
                                 SongSyncEvent(
                                     senderId = senderId,
@@ -394,7 +400,7 @@ class NtfyRoomTransport(
                                 timestampMs = ts
                             )
                         )
-                        if (inserted != -1L && senderId.isNotBlank() && senderId != mySenderId) {
+                        if (inserted != -1L && ts >= (connectedAtMs - 2000L) && senderId.isNotBlank() && senderId != mySenderId) {
                             _incomingMessageNotice.emit(Unit)
                         }
                     }
